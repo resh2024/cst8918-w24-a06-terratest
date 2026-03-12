@@ -1,11 +1,11 @@
 # Define config variables
 variable "labelPrefix" {
   type        = string
-  description = "Your college username. This will form the beginning of various resource names."
+  description = "resh0004"
 }
 
 variable "region" {
-  default = "westus3"
+  default = "canadacentral"
 }
 
 variable "admin_username" {
