@@ -23,32 +23,78 @@ func TestAzureLinuxVMCreation(t *testing.T) {
 	}
 
 	defer terraform.Destroy(t, terraformOptions)
-
-	// Run `terraform init` and `terraform apply`. Fail the test if there are any errors.
 	terraform.InitAndApply(t, terraformOptions)
 
-	// Run `terraform output` to get the value of output variable
+	// Collect Terraform outputs
 	vmName := terraform.Output(t, terraformOptions, "vm_name")
-	resourceGroupName := terraform.Output(t, terraformOptions, "resource_group_name")
+	rgName := terraform.Output(t, terraformOptions, "resource_group_name")
 
-	// Confirm VM exists
-	assert.True(t, azure.VirtualMachineExists(t, vmName, resourceGroupName, subscriptionID))
-	// --- NIC connected to VM ---
-	t.Run("NIC exists", func(t *testing.T) {
-		nicName := terraform.Output(t, terraformOptions, "nic_name")
+	// ----------------------
+	// Check 1: VM existence
+	// ----------------------
+	exists := azure.VirtualMachineExists(t, vmName, rgName, subscriptionID)
+	assert.True(t, exists, "Expected VM to exist in the resource group")
 
-		exists := azure.NetworkInterfaceExists(t, nicName, resourceGroupName, subscriptionID)
-		assert.True(t, exists, "NIC should exist")
-	})
-	t.Run("VM has correct Ubuntu version", func(t *testing.T) {
-		vm := azure.GetVirtualMachine(t, vmName, resourceGroupName, subscriptionID)
+	// Retrieve VM details for further validation
+	vmDetails, err := azure.GetVirtualMachineE(vmName, rgName, subscriptionID)
+	assert.NoError(t, err)
 
-		imagePublisher := *vm.StorageProfile.ImageReference.Publisher
-		imageOffer := *vm.StorageProfile.ImageReference.Offer
-		imageSKU := *vm.StorageProfile.ImageReference.Sku
+	// ----------------------
+	// Check 2: Ubuntu version
+	// ----------------------
+	skuValue := *vmDetails.StorageProfile.ImageReference.Sku
+	expectedUbuntuSku := "22_04-lts-gen2"
 
-		assert.Equal(t, "Canonical", imagePublisher)
-		assert.Contains(t, imageOffer, "ubuntu")
-		assert.Contains(t, imageSKU, "22")
-	})
+	assert.Equal(
+		t,
+		expectedUbuntuSku,
+		skuValue,
+		"VM image SKU does not match the expected Ubuntu version",
+	)
+
+	// ----------------------
+	// Check 3: NIC attachment
+	// ----------------------
+	nicList, err := FetchVMNicNames(vmName, rgName, subscriptionID)
+	assert.NoError(t, err)
+
+	assert.Greater(
+		t,
+		len(nicList),
+		0,
+		"VM should have at least one network interface attached",
+	)
+
+	// Verify each NIC exists in Azure
+	for _, nic := range nicList {
+		assert.True(
+			t,
+			azure.NetworkInterfaceExists(t, nic, rgName, subscriptionID),
+			"Network interface "+nic+" should exist",
+		)
+	}
+}
+
+func FetchVMNicNames(vmName string, resourceGroup string, subscriptionID string) ([]string, error) {
+
+	vm, err := azure.GetVirtualMachineE(vmName, resourceGroup, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if vm.NetworkProfile == nil || vm.NetworkProfile.NetworkInterfaces == nil {
+		return []string{}, nil
+	}
+
+	vmInterfaces := *vm.NetworkProfile.NetworkInterfaces
+	nicNames := make([]string, 0)
+
+	for _, nic := range vmInterfaces {
+		name, err := azure.GetNameFromResourceIDE(*nic.ID)
+		if err == nil {
+			nicNames = append(nicNames, name)
+		}
+	}
+
+	return nicNames, nil
 }
